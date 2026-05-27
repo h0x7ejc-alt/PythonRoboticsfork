@@ -143,6 +143,146 @@ def test_while_do_else_node():
     assert bt.root.children[2].status is None
 
 
+def test_retry_until_successful_node_retries_until_success():
+    xml_string = """
+        <RetryUntilSuccessful name="Retry Node" num_attempts="2">
+            <Flaky name="Flaky" succeed_on_attempt="2" />
+        </RetryUntilSuccessful>
+    """
+
+    class FlakyNode(ActionNode):
+        def __init__(self, name, succeed_on_attempt):
+            super().__init__(name)
+            self.total_tick_count = 0
+            self.succeed_on_attempt = succeed_on_attempt
+
+        def tick(self):
+            self.total_tick_count += 1
+            if self.total_tick_count >= self.succeed_on_attempt:
+                return Status.SUCCESS
+            return Status.FAILURE
+
+    bt_factory = BehaviorTreeFactory()
+    bt_factory.register_node_builder(
+        "Flaky",
+        lambda node: FlakyNode(
+            node.attrib.get("name", FlakyNode.__name__),
+            int(node.attrib["succeed_on_attempt"]),
+        ),
+    )
+    bt = bt_factory.build_tree(xml_string)
+
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.current_attempt_count == 1
+    assert bt.root.child.status is None
+
+    bt.tick()
+    assert bt.root.status == Status.SUCCESS
+    assert bt.root.current_attempt_count == 1
+    assert bt.root.child.status == Status.SUCCESS
+
+
+def test_retry_until_successful_node_fails_after_max_attempts():
+    xml_string = """
+        <RetryUntilSuccessful name="Retry Node" num_attempts="2">
+            <Flaky name="Flaky" succeed_on_attempt="4" />
+        </RetryUntilSuccessful>
+    """
+
+    class FlakyNode(ActionNode):
+        def __init__(self, name, succeed_on_attempt):
+            super().__init__(name)
+            self.total_tick_count = 0
+            self.succeed_on_attempt = succeed_on_attempt
+
+        def tick(self):
+            self.total_tick_count += 1
+            if self.total_tick_count >= self.succeed_on_attempt:
+                return Status.SUCCESS
+            return Status.FAILURE
+
+    bt_factory = BehaviorTreeFactory()
+    bt_factory.register_node_builder(
+        "Flaky",
+        lambda node: FlakyNode(
+            node.attrib.get("name", FlakyNode.__name__),
+            int(node.attrib["succeed_on_attempt"]),
+        ),
+    )
+    bt = bt_factory.build_tree(xml_string)
+
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.current_attempt_count == 1
+    assert bt.root.child.status is None
+
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.current_attempt_count == 2
+    assert bt.root.child.status is None
+
+    bt.tick()
+    assert bt.root.status == Status.FAILURE
+    assert bt.root.current_attempt_count == 2
+    assert bt.root.child.status == Status.FAILURE
+
+
+def test_retry_until_successful_node_resets_with_sequence():
+    xml_string = """
+        <Sequence>
+            <RetryUntilSuccessful name="Retry Node" num_attempts="2">
+                <Flaky name="Flaky" succeed_on_attempt="2" />
+            </RetryUntilSuccessful>
+            <Echo name="Echo 1" message="Hello, World1!" />
+        </Sequence>
+    """
+
+    class FlakyNode(ActionNode):
+        def __init__(self, name, succeed_on_attempt):
+            super().__init__(name)
+            self.total_tick_count = 0
+            self.succeed_on_attempt = succeed_on_attempt
+
+        def tick(self):
+            self.total_tick_count += 1
+            if self.total_tick_count >= self.succeed_on_attempt:
+                return Status.SUCCESS
+            return Status.FAILURE
+
+    bt_factory = BehaviorTreeFactory()
+    bt_factory.register_node_builder(
+        "Flaky",
+        lambda node: FlakyNode(
+            node.attrib.get("name", FlakyNode.__name__),
+            int(node.attrib["succeed_on_attempt"]),
+        ),
+    )
+    bt = bt_factory.build_tree(xml_string)
+
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.children[0].status == Status.RUNNING
+    assert bt.root.children[0].current_attempt_count == 1
+    assert bt.root.children[0].child.status is None
+
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.children[0].status == Status.SUCCESS
+    assert bt.root.children[0].child.status == Status.SUCCESS
+
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.children[1].status == Status.SUCCESS
+
+    bt.tick()
+    assert bt.root.status == Status.SUCCESS
+    assert bt.root.children[0].status is None
+    assert bt.root.children[0].current_attempt_count == 0
+    assert bt.root.children[0].child.status is None
+    assert bt.root.children[1].status is None
+
+
 def test_node_children():
     # ControlNode Must have children
     xml_string = """

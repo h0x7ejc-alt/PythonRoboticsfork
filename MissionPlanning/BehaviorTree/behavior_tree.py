@@ -435,6 +435,48 @@ class ForceFailureNode(DecoratorNode):
         return status
 
 
+class RetryUntilSuccessfulNode(DecoratorNode):
+    """
+    RetryUntilSuccessful node that retries a failed child until it succeeds
+    or the retry limit is exceeded.
+
+    Returns:
+        - Returns SUCCESS immediately if the child returns SUCCESS
+        - Returns RUNNING while retry attempts remain after a child FAILURE
+        - Returns FAILURE after the child has failed more than num_attempts times
+        - Returns RUNNING if the child returns RUNNING
+    """
+
+    def __init__(self, name, num_attempts):
+        super().__init__(name)
+        if num_attempts < 0:
+            raise ValueError("num_attempts must be greater than or equal to 0")
+        self.num_attempts = num_attempts
+        self.current_attempt_count = 0
+
+    def tick(self) -> Status:
+        self.not_set_child_raise_error()
+        status = self.child.tick_and_set_status()
+
+        if status == Status.SUCCESS:
+            return Status.SUCCESS
+        if status == Status.RUNNING:
+            return Status.RUNNING
+        if status == Status.FAILURE:
+            if self.current_attempt_count < self.num_attempts:
+                self.current_attempt_count += 1
+                self.child.reset()
+                return Status.RUNNING
+            return Status.FAILURE
+        raise ValueError("Unknown status")
+
+    def reset(self):
+        super().reset()
+        self.current_attempt_count = 0
+        if self.child is not None:
+            self.child.reset()
+
+
 class BehaviorTree:
     """
     Behavior tree class that manages the execution of a behavior tree.
@@ -570,6 +612,13 @@ class BehaviorTreeFactory:
             "ForceFailure",
             lambda node: ForceFailureNode(
                 node.attrib.get("name", ForceFailureNode.__name__)
+            ),
+        )
+        self.register_node_builder(
+            "RetryUntilSuccessful",
+            lambda node: RetryUntilSuccessfulNode(
+                node.attrib.get("name", RetryUntilSuccessfulNode.__name__),
+                int(node.attrib["num_attempts"]),
             ),
         )
         # Action nodes
