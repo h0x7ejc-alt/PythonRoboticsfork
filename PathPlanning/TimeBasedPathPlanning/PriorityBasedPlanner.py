@@ -23,25 +23,42 @@ import time
 class PriorityBasedPlanner(MultiAgentPlanner):
 
     @staticmethod
-    def plan(grid: Grid, start_and_goals: list[StartAndGoal], single_agent_planner_class: SingleAgentPlanner, verbose: bool = False) -> tuple[list[StartAndGoal], list[NodePath]]:
+    def plan(grid: Grid, start_and_goals: list[StartAndGoal], single_agent_planner_class: SingleAgentPlanner, verbose: bool = False, order_strategy: str = "longest_first") -> tuple[list[StartAndGoal], list[NodePath]]:
         """
         Generate a path from the start to the goal for each agent in the `start_and_goals` list.
         Returns the re-ordered StartAndGoal combinations, and a list of path plans. The order of the plans
         corresponds to the order of the `start_and_goals` list.
+        
+        :param order_strategy: Strategy to determine the planning order for agents. Options:
+            - "longest_first": Agents with longer start-goal distance are planned first (default)
+            - "shortest_first": Agents with shorter start-goal distance are planned first
+            - "input_order": Agents are planned in the order they are provided
         """
         print(f"Using single-agent planner: {single_agent_planner_class}")
+        print(f"Using order strategy: {order_strategy}")
 
         # Reserve initial positions
         for start_and_goal in start_and_goals:
             grid.reserve_position(start_and_goal.start, start_and_goal.index, Interval(0, 10))
 
-        # Plan in descending order of distance from start to goal
-        start_and_goals = sorted(start_and_goals,
-                    key=lambda item: item.distance_start_to_goal(),
-                    reverse=True)
+        # Sort agents according to the specified strategy
+        ordered_agents = start_and_goals.copy()
+        if order_strategy == "longest_first":
+            ordered_agents = sorted(start_and_goals,
+                        key=lambda item: item.distance_start_to_goal(),
+                        reverse=True)
+        elif order_strategy == "shortest_first":
+            ordered_agents = sorted(start_and_goals,
+                        key=lambda item: item.distance_start_to_goal(),
+                        reverse=False)
+        elif order_strategy == "input_order":
+            # Keep the original order
+            pass
+        else:
+            raise ValueError(f"Unknown order strategy: {order_strategy}. Valid options: longest_first, shortest_first, input_order")
 
         paths = []
-        for start_and_goal in start_and_goals:
+        for start_and_goal in ordered_agents:
             if verbose:
                 print(f"\nPlanning for agent:  {start_and_goal}" )
 
@@ -50,13 +67,13 @@ class PriorityBasedPlanner(MultiAgentPlanner):
 
             if path is None:
                 print(f"Failed to find path for {start_and_goal}")
-                return []
+                return ([], [])
 
             agent_index = start_and_goal.index
             grid.reserve_path(path, agent_index)
             paths.append(path)
 
-        return (start_and_goals, paths)
+        return (ordered_agents, paths)
 
 verbose = False
 show_animation = True

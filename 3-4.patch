@@ -1,0 +1,154 @@
+diff --git a/PathPlanning/TimeBasedPathPlanning/PriorityBasedPlanner.py b/PathPlanning/TimeBasedPathPlanning/PriorityBasedPlanner.py
+index 2573965..6106f51 100644
+--- a/PathPlanning/TimeBasedPathPlanning/PriorityBasedPlanner.py
++++ b/PathPlanning/TimeBasedPathPlanning/PriorityBasedPlanner.py
+@@ -23,25 +23,42 @@ import time
+ class PriorityBasedPlanner(MultiAgentPlanner):
+ 
+     @staticmethod
+-    def plan(grid: Grid, start_and_goals: list[StartAndGoal], single_agent_planner_class: SingleAgentPlanner, verbose: bool = False) -> tuple[list[StartAndGoal], list[NodePath]]:
++    def plan(grid: Grid, start_and_goals: list[StartAndGoal], single_agent_planner_class: SingleAgentPlanner, verbose: bool = False, order_strategy: str = "longest_first") -> tuple[list[StartAndGoal], list[NodePath]]:
+         """
+         Generate a path from the start to the goal for each agent in the `start_and_goals` list.
+         Returns the re-ordered StartAndGoal combinations, and a list of path plans. The order of the plans
+         corresponds to the order of the `start_and_goals` list.
++        
++        :param order_strategy: Strategy to determine the planning order for agents. Options:
++            - "longest_first": Agents with longer start-goal distance are planned first (default)
++            - "shortest_first": Agents with shorter start-goal distance are planned first
++            - "input_order": Agents are planned in the order they are provided
+         """
+         print(f"Using single-agent planner: {single_agent_planner_class}")
++        print(f"Using order strategy: {order_strategy}")
+ 
+         # Reserve initial positions
+         for start_and_goal in start_and_goals:
+             grid.reserve_position(start_and_goal.start, start_and_goal.index, Interval(0, 10))
+ 
+-        # Plan in descending order of distance from start to goal
+-        start_and_goals = sorted(start_and_goals,
+-                    key=lambda item: item.distance_start_to_goal(),
+-                    reverse=True)
++        # Sort agents according to the specified strategy
++        ordered_agents = start_and_goals.copy()
++        if order_strategy == "longest_first":
++            ordered_agents = sorted(start_and_goals,
++                        key=lambda item: item.distance_start_to_goal(),
++                        reverse=True)
++        elif order_strategy == "shortest_first":
++            ordered_agents = sorted(start_and_goals,
++                        key=lambda item: item.distance_start_to_goal(),
++                        reverse=False)
++        elif order_strategy == "input_order":
++            # Keep the original order
++            pass
++        else:
++            raise ValueError(f"Unknown order strategy: {order_strategy}. Valid options: longest_first, shortest_first, input_order")
+ 
+         paths = []
+-        for start_and_goal in start_and_goals:
++        for start_and_goal in ordered_agents:
+             if verbose:
+                 print(f"\nPlanning for agent:  {start_and_goal}" )
+ 
+@@ -50,13 +67,13 @@ class PriorityBasedPlanner(MultiAgentPlanner):
+ 
+             if path is None:
+                 print(f"Failed to find path for {start_and_goal}")
+-                return []
++                return ([], [])
+ 
+             agent_index = start_and_goal.index
+             grid.reserve_path(path, agent_index)
+             paths.append(path)
+ 
+-        return (start_and_goals, paths)
++        return (ordered_agents, paths)
+ 
+ verbose = False
+ show_animation = True
+diff --git a/tests/test_priority_based_planner.py b/tests/test_priority_based_planner.py
+index e2ff602..bf10e21 100644
+--- a/tests/test_priority_based_planner.py
++++ b/tests/test_priority_based_planner.py
+@@ -11,29 +11,70 @@ import numpy as np
+ import conftest
+ 
+ 
+-def test_1():
+-    grid_side_length = 21
+-
+-    start_and_goals = [StartAndGoal(i, Position(1, i), Position(19, 19-i)) for i in range(1, 16)]
++def create_test_grid_and_agents(grid_side_length=21, num_agents=15):
++    start_and_goals = [StartAndGoal(i, Position(1, i), Position(19, 19-i)) for i in range(1, num_agents+1)]
+     obstacle_avoid_points = [pos for item in start_and_goals for pos in (item.start, item.goal)]
+-
++    
+     grid = Grid(
+         np.array([grid_side_length, grid_side_length]),
+         num_obstacles=250,
+         obstacle_avoid_points=obstacle_avoid_points,
+         obstacle_arrangement=ObstacleArrangement.ARRANGEMENT1,
+     )
++    
++    return grid, start_and_goals
+ 
+-    m.show_animation = False
+-
+-    start_and_goals: list[StartAndGoal]
+-    paths: list[NodePath]
+-    start_and_goals, paths = m.PriorityBasedPlanner.plan(grid, start_and_goals, SafeIntervalPathPlanner, False)
+ 
++def verify_paths(start_and_goals, paths):
+     # All paths should start at the specified position and reach the goal
+     for i, start_and_goal in enumerate(start_and_goals):
+         assert paths[i].path[0].position == start_and_goal.start
+         assert paths[i].path[-1].position == start_and_goal.goal
+ 
++
++def test_default_strategy_longest_first():
++    """Test the default strategy (longest_first)"""
++    m.show_animation = False
++    grid, start_and_goals = create_test_grid_and_agents()
++    
++    # Test with default strategy
++    ordered_agents, paths = m.PriorityBasedPlanner.plan(grid, start_and_goals, SafeIntervalPathPlanner, False)
++    verify_paths(ordered_agents, paths)
++
++
++def test_strategy_shortest_first():
++    """Test shortest_first strategy"""
++    m.show_animation = False
++    grid, start_and_goals = create_test_grid_and_agents()
++    
++    ordered_agents, paths = m.PriorityBasedPlanner.plan(grid, start_and_goals, SafeIntervalPathPlanner, False, order_strategy="shortest_first")
++    verify_paths(ordered_agents, paths)
++
++
++def test_strategy_input_order():
++    """Test input_order strategy"""
++    m.show_animation = False
++    grid, start_and_goals = create_test_grid_and_agents()
++    
++    ordered_agents, paths = m.PriorityBasedPlanner.plan(grid, start_and_goals, SafeIntervalPathPlanner, False, order_strategy="input_order")
++    verify_paths(ordered_agents, paths)
++    
++    # Verify the order remains the same as input
++    for i in range(len(start_and_goals)):
++        assert ordered_agents[i].index == start_and_goals[i].index
++
++
++def test_invalid_strategy():
++    """Test invalid strategy raises ValueError"""
++    m.show_animation = False
++    grid, start_and_goals = create_test_grid_and_agents(num_agents=2)
++    
++    try:
++        m.PriorityBasedPlanner.plan(grid, start_and_goals, SafeIntervalPathPlanner, False, order_strategy="invalid_strategy")
++        assert False, "Expected ValueError was not raised"
++    except ValueError as e:
++        assert "Unknown order strategy" in str(e)
++
++
+ if __name__ == "__main__":
+     conftest.run_this_test(__file__)
