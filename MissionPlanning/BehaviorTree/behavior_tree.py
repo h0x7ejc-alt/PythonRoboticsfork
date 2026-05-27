@@ -435,6 +435,46 @@ class ForceFailureNode(DecoratorNode):
         return status
 
 
+class RetryUntilSuccessfulNode(DecoratorNode):
+    """
+    RetryUntilSuccessful node that retries its child node if it fails, up to a maximum number of attempts.
+
+    Returns:
+        - Returns SUCCESS if the child returns SUCCESS
+        - Returns FAILURE if the child returns FAILURE and the maximum number of attempts has been reached
+        - Returns RUNNING if the child returns RUNNING, or if the child returns FAILURE and attempts are within the limit
+    """
+
+    def __init__(self, name, num_attempts):
+        super().__init__(name)
+        self.num_attempts = num_attempts
+        self.attempts = 0
+
+    def tick(self) -> Status:
+        self.not_set_child_raise_error()
+        status = self.child.tick_and_set_status()
+
+        if status == Status.SUCCESS:
+            return Status.SUCCESS
+        elif status == Status.RUNNING:
+            return Status.RUNNING
+        elif status == Status.FAILURE:
+            self.attempts += 1
+            if self.attempts >= self.num_attempts:
+                return Status.FAILURE
+            else:
+                self.child.reset()
+                return Status.RUNNING
+        else:
+            raise ValueError("Unknown status")
+
+    def reset(self):
+        super().reset()
+        self.attempts = 0
+        if self.child:
+            self.child.reset()
+
+
 class BehaviorTree:
     """
     Behavior tree class that manages the execution of a behavior tree.
@@ -570,6 +610,13 @@ class BehaviorTreeFactory:
             "ForceFailure",
             lambda node: ForceFailureNode(
                 node.attrib.get("name", ForceFailureNode.__name__)
+            ),
+        )
+        self.register_node_builder(
+            "RetryUntilSuccessful",
+            lambda node: RetryUntilSuccessfulNode(
+                node.attrib.get("name", RetryUntilSuccessfulNode.__name__),
+                int(node.attrib["num_attempts"]),
             ),
         )
         # Action nodes

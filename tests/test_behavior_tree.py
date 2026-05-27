@@ -203,5 +203,137 @@ def test_node_children():
         bt.tick()
 
 
+def test_retry_until_successful_success():
+    external_state = {"fails_left": 2}
+    xml_string = """
+        <RetryUntilSuccessful num_attempts="3">
+            <ExternalFail name="ExternalFail" />
+        </RetryUntilSuccessful>
+    """
+
+    class ExternalFailNode(ActionNode):
+        def tick(self):
+            if external_state["fails_left"] > 0:
+                external_state["fails_left"] -= 1
+                return Status.FAILURE
+            return Status.SUCCESS
+
+    bt_factory = BehaviorTreeFactory()
+    bt_factory.register_node_builder("ExternalFail", lambda node: ExternalFailNode(node.attrib.get("name")))
+    bt = bt_factory.build_tree(xml_string)
+
+    # Tick 1: fails, attempts=1. Returns RUNNING.
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.attempts == 1
+
+    # Tick 2: fails, attempts=2. Returns RUNNING.
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.attempts == 2
+
+    # Tick 3: succeeds. Returns SUCCESS.
+    bt.tick()
+    assert bt.root.status == Status.SUCCESS
+    assert bt.root.attempts == 2
+
+
+def test_retry_until_successful_failure():
+    external_state = {"fails_left": 3}
+    xml_string = """
+        <RetryUntilSuccessful num_attempts="3">
+            <ExternalFail name="ExternalFail" />
+        </RetryUntilSuccessful>
+    """
+
+    class ExternalFailNode(ActionNode):
+        def tick(self):
+            if external_state["fails_left"] > 0:
+                external_state["fails_left"] -= 1
+                return Status.FAILURE
+            return Status.SUCCESS
+
+    bt_factory = BehaviorTreeFactory()
+    bt_factory.register_node_builder("ExternalFail", lambda node: ExternalFailNode(node.attrib.get("name")))
+    bt = bt_factory.build_tree(xml_string)
+
+    # Tick 1: fails, attempts=1. Returns RUNNING.
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.attempts == 1
+
+    # Tick 2: fails, attempts=2. Returns RUNNING.
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.attempts == 2
+
+    # Tick 3: fails, attempts=3. limit reached, Returns FAILURE.
+    bt.tick()
+    assert bt.root.status == Status.FAILURE
+    assert bt.root.attempts == 3
+
+
+def test_retry_until_successful_running():
+    xml_string = """
+        <RetryUntilSuccessful num_attempts="3">
+            <RunningNode name="Running" />
+        </RetryUntilSuccessful>
+    """
+
+    class RunningNode(ActionNode):
+        def tick(self):
+            return Status.RUNNING
+
+    bt_factory = BehaviorTreeFactory()
+    bt_factory.register_node_builder("RunningNode", lambda node: RunningNode(node.attrib.get("name")))
+    bt = bt_factory.build_tree(xml_string)
+
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.attempts == 0
+
+
+def test_retry_until_successful_reset():
+    external_state = {"fails_left": 1}
+    xml_string = """
+        <Sequence>
+            <RetryUntilSuccessful num_attempts="3">
+                <ExternalFail name="ExternalFail" />
+            </RetryUntilSuccessful>
+            <ForceFailure name="ForceFail">
+                <Echo name="Echo" message="test" />
+            </ForceFailure>
+        </Sequence>
+    """
+
+    class ExternalFailNode(ActionNode):
+        def tick(self):
+            if external_state["fails_left"] > 0:
+                external_state["fails_left"] -= 1
+                return Status.FAILURE
+            return Status.SUCCESS
+
+    bt_factory = BehaviorTreeFactory()
+    bt_factory.register_node_builder("ExternalFail", lambda node: ExternalFailNode(node.attrib.get("name")))
+    bt = bt_factory.build_tree(xml_string)
+
+    # Tick 1: Retry child fails, attempts=1. Sequence gets RUNNING.
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.children[0].status == Status.RUNNING
+    assert bt.root.children[0].attempts == 1
+
+    # Tick 2: Retry child succeeds. Retry returns SUCCESS. Sequence gets RUNNING.
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.children[0].status == Status.SUCCESS
+
+    # Tick 3: Sequence ticks ForceFailure. It fails. Sequence returns FAILURE and resets children.
+    bt.tick()
+    assert bt.root.status == Status.FAILURE
+    assert bt.root.children[0].status is None
+    assert bt.root.children[0].attempts == 0
+
+
 if __name__ == "__main__":
     conftest.run_this_test(__file__)
