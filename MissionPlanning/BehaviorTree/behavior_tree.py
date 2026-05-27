@@ -435,6 +435,55 @@ class ForceFailureNode(DecoratorNode):
         return status
 
 
+class RetryUntilSuccessfulNode(DecoratorNode):
+    """
+    RetryUntilSuccessful decorator that retries its child until the child succeeds
+    or the maximum number of attempts is reached.
+
+    Returns:
+        - SUCCESS: if the child returns SUCCESS
+        - RUNNING: if the child returns FAILURE and attempts remain
+        - FAILURE: if the child returns FAILURE and no attempts remain
+        - RUNNING: if the child returns RUNNING (pass-through)
+
+    Example:
+        .. code-block:: xml
+
+            <RetryUntilSuccessful num_attempts="3">
+                <Action />
+            </RetryUntilSuccessful>
+    """
+
+    def __init__(self, name, num_attempts):
+        super().__init__(name)
+        self.num_attempts = num_attempts
+        self.current_attempt = 0
+
+    def tick(self) -> Status:
+        self.not_set_child_raise_error()
+        status = self.child.tick_and_set_status()
+
+        if status == Status.RUNNING:
+            return Status.RUNNING
+
+        if status == Status.SUCCESS:
+            self.current_attempt = 0
+            return Status.SUCCESS
+
+        if status == Status.FAILURE:
+            self.current_attempt += 1
+            if self.current_attempt >= self.num_attempts:
+                self.current_attempt = 0
+                return Status.FAILURE
+            return Status.RUNNING
+
+        return status
+
+    def reset(self):
+        super().reset()
+        self.current_attempt = 0
+
+
 class BehaviorTree:
     """
     Behavior tree class that manages the execution of a behavior tree.
@@ -570,6 +619,13 @@ class BehaviorTreeFactory:
             "ForceFailure",
             lambda node: ForceFailureNode(
                 node.attrib.get("name", ForceFailureNode.__name__)
+            ),
+        )
+        self.register_node_builder(
+            "RetryUntilSuccessful",
+            lambda node: RetryUntilSuccessfulNode(
+                node.attrib.get("name", RetryUntilSuccessfulNode.__name__),
+                int(node.attrib["num_attempts"]),
             ),
         )
         # Action nodes
