@@ -23,7 +23,7 @@ import time
 class PriorityBasedPlanner(MultiAgentPlanner):
 
     @staticmethod
-    def plan(grid: Grid, start_and_goals: list[StartAndGoal], single_agent_planner_class: SingleAgentPlanner, verbose: bool = False) -> tuple[list[StartAndGoal], list[NodePath]]:
+    def plan(grid: Grid, start_and_goals: list[StartAndGoal], single_agent_planner_class: SingleAgentPlanner, verbose: bool = False, sort_strategy: str = "longest_first") -> tuple[list[StartAndGoal], list[NodePath]]:
         """
         Generate a path from the start to the goal for each agent in the `start_and_goals` list.
         Returns the re-ordered StartAndGoal combinations, and a list of path plans. The order of the plans
@@ -35,10 +35,19 @@ class PriorityBasedPlanner(MultiAgentPlanner):
         for start_and_goal in start_and_goals:
             grid.reserve_position(start_and_goal.start, start_and_goal.index, Interval(0, 10))
 
-        # Plan in descending order of distance from start to goal
-        start_and_goals = sorted(start_and_goals,
-                    key=lambda item: item.distance_start_to_goal(),
-                    reverse=True)
+        # Sort the planning order based on the selected strategy
+        if sort_strategy == "longest_first":
+            start_and_goals = sorted(start_and_goals,
+                        key=lambda item: item.distance_start_to_goal(),
+                        reverse=True)
+        elif sort_strategy == "shortest_first":
+            start_and_goals = sorted(start_and_goals,
+                        key=lambda item: item.distance_start_to_goal(),
+                        reverse=False)
+        elif sort_strategy == "input_order":
+            pass
+        else:
+            raise ValueError(f"Unknown sort_strategy: {sort_strategy}")
 
         paths = []
         for start_and_goal in start_and_goals:
@@ -50,7 +59,7 @@ class PriorityBasedPlanner(MultiAgentPlanner):
 
             if path is None:
                 print(f"Failed to find path for {start_and_goal}")
-                return []
+                return ([], [])
 
             agent_index = start_and_goal.index
             grid.reserve_path(path, agent_index)
