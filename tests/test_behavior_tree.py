@@ -203,5 +203,166 @@ def test_node_children():
         bt.tick()
 
 
+class FlakyNode(ActionNode):
+    def __init__(self, name, fail_count):
+        super().__init__(name)
+        self.fail_count = fail_count
+        self.ticks = 0
+
+    def tick(self):
+        self.ticks += 1
+        if self.ticks <= self.fail_count:
+            return Status.FAILURE
+        return Status.SUCCESS
+
+    def reset(self):
+        super().reset()
+        self.ticks = 0
+
+
+def test_retry_until_successful_eventually_succeeds():
+    bt_factory = BehaviorTreeFactory()
+    bt_factory.register_node_builder(
+        "FlakyNode",
+        lambda node: FlakyNode(
+            node.attrib.get("name", FlakyNode.__name__),
+            int(node.attrib["fail_count"]),
+        ),
+    )
+    xml_string = """
+        <RetryUntilSuccessful num_attempts="3">
+            <FlakyNode name="Flaky" fail_count="2" />
+        </RetryUntilSuccessful>
+    """
+    bt = bt_factory.build_tree(xml_string)
+
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.attempts == 1
+
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.attempts == 2
+
+    bt.tick()
+    assert bt.root.status == Status.SUCCESS
+    assert bt.root.attempts == 0
+
+
+def test_retry_until_successful_exceeds_max_attempts():
+    bt_factory = BehaviorTreeFactory()
+    bt_factory.register_node_builder(
+        "FlakyNode",
+        lambda node: FlakyNode(
+            node.attrib.get("name", FlakyNode.__name__),
+            int(node.attrib["fail_count"]),
+        ),
+    )
+    xml_string = """
+        <RetryUntilSuccessful num_attempts="3">
+            <FlakyNode name="Flaky" fail_count="999" />
+        </RetryUntilSuccessful>
+    """
+    bt = bt_factory.build_tree(xml_string)
+
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.attempts == 1
+
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.attempts == 2
+
+    bt.tick()
+    assert bt.root.status == Status.FAILURE
+    assert bt.root.attempts == 3
+
+
+def test_retry_until_successful_passes_through_running():
+    class SlowNode(ActionNode):
+        def __init__(self, name, ready_after_ticks):
+            super().__init__(name)
+            self.ready_after_ticks = ready_after_ticks
+            self.ticks = 0
+
+        def tick(self):
+            self.ticks += 1
+            if self.ticks >= self.ready_after_ticks:
+                return Status.SUCCESS
+            return Status.RUNNING
+
+        def reset(self):
+            super().reset()
+            self.ticks = 0
+
+    bt_factory = BehaviorTreeFactory()
+    bt_factory.register_node_builder(
+        "SlowNode",
+        lambda node: SlowNode(
+            node.attrib.get("name", SlowNode.__name__),
+            int(node.attrib["ready_after_ticks"]),
+        ),
+    )
+    xml_string = """
+        <RetryUntilSuccessful num_attempts="5">
+            <SlowNode name="Slow" ready_after_ticks="3" />
+        </RetryUntilSuccessful>
+    """
+    bt = bt_factory.build_tree(xml_string)
+
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.attempts == 0
+
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.attempts == 0
+
+    bt.tick()
+    assert bt.root.status == Status.SUCCESS
+    assert bt.root.attempts == 0
+
+
+def test_retry_until_successful_with_sequence_composition_and_reset():
+    bt_factory = BehaviorTreeFactory()
+    bt_factory.register_node_builder(
+        "FlakyNode",
+        lambda node: FlakyNode(
+            node.attrib.get("name", FlakyNode.__name__),
+            int(node.attrib["fail_count"]),
+        ),
+    )
+    xml_string = """
+        <Sequence name="Root">
+            <RetryUntilSuccessful name="Retry" num_attempts="3">
+                <FlakyNode name="Flaky" fail_count="1" />
+            </RetryUntilSuccessful>
+            <Echo name="EchoFinish" message="Done!" />
+        </Sequence>
+    """
+    bt = bt_factory.build_tree(xml_string)
+
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    retry_node = bt.root.children[0]
+    assert retry_node.status == Status.RUNNING
+    assert retry_node.attempts == 1
+
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert retry_node.status == Status.SUCCESS
+    assert retry_node.attempts == 0
+    assert bt.root.children[1].status is None
+
+    bt.tick()
+    assert bt.root.status == Status.RUNNING
+    assert bt.root.children[1].status == Status.SUCCESS
+
+    bt.tick()
+    assert bt.root.status == Status.SUCCESS
+    assert retry_node.status is None
+    assert bt.root.children[1].status is None
+
+
 if __name__ == "__main__":
     conftest.run_this_test(__file__)

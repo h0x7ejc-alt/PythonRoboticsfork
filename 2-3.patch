@@ -1,0 +1,242 @@
+diff --git a/MissionPlanning/BehaviorTree/behavior_tree.py b/MissionPlanning/BehaviorTree/behavior_tree.py
+index 9ad886a..6f601e2 100644
+--- a/MissionPlanning/BehaviorTree/behavior_tree.py
++++ b/MissionPlanning/BehaviorTree/behavior_tree.py
+@@ -435,6 +435,52 @@ class ForceFailureNode(DecoratorNode):
+         return status
+ 
+ 
++class RetryUntilSuccessful(DecoratorNode):
++    """
++    RetryUntilSuccessful node that retries its child on failure up to a maximum number of attempts.
++
++    Returns:
++        - Returns SUCCESS if the child returns SUCCESS
++        - Returns RUNNING if the child returns RUNNING (pass through)
++        - Returns RUNNING if the child returns FAILURE and max attempts not yet reached (retries)
++        - Returns FAILURE if the child returns FAILURE and max attempts reached
++
++    Example:
++        .. code-block:: xml
++
++            <RetryUntilSuccessful num_attempts="3">
++                <Action />
++            </RetryUntilSuccessful>
++    """
++
++    def __init__(self, name, num_attempts):
++        super().__init__(name)
++        self.num_attempts = num_attempts
++        self.attempts = 0
++
++    def tick(self) -> Status:
++        self.not_set_child_raise_error()
++        status = self.child.tick_and_set_status()
++        if status == Status.SUCCESS:
++            self.attempts = 0
++            return Status.SUCCESS
++        elif status == Status.RUNNING:
++            return Status.RUNNING
++        elif status == Status.FAILURE:
++            self.attempts += 1
++            if self.attempts >= self.num_attempts:
++                return Status.FAILURE
++            else:
++                return Status.RUNNING
++        else:
++            raise ValueError("Unknown status")
++
++    def reset(self):
++        self.status = None
++        self.attempts = 0
++        self.reset_children()
++
++
+ class BehaviorTree:
+     """
+     Behavior tree class that manages the execution of a behavior tree.
+@@ -572,6 +618,13 @@ class BehaviorTreeFactory:
+                 node.attrib.get("name", ForceFailureNode.__name__)
+             ),
+         )
++        self.register_node_builder(
++            "RetryUntilSuccessful",
++            lambda node: RetryUntilSuccessful(
++                node.attrib.get("name", RetryUntilSuccessful.__name__),
++                int(node.attrib["num_attempts"]),
++            ),
++        )
+         # Action nodes
+         self.register_node_builder(
+             "Sleep",
+diff --git a/tests/test_behavior_tree.py b/tests/test_behavior_tree.py
+index 0898690..8967219 100644
+--- a/tests/test_behavior_tree.py
++++ b/tests/test_behavior_tree.py
+@@ -203,5 +203,166 @@ def test_node_children():
+         bt.tick()
+ 
+ 
++class FlakyNode(ActionNode):
++    def __init__(self, name, fail_count):
++        super().__init__(name)
++        self.fail_count = fail_count
++        self.ticks = 0
++
++    def tick(self):
++        self.ticks += 1
++        if self.ticks <= self.fail_count:
++            return Status.FAILURE
++        return Status.SUCCESS
++
++    def reset(self):
++        super().reset()
++        self.ticks = 0
++
++
++def test_retry_until_successful_eventually_succeeds():
++    bt_factory = BehaviorTreeFactory()
++    bt_factory.register_node_builder(
++        "FlakyNode",
++        lambda node: FlakyNode(
++            node.attrib.get("name", FlakyNode.__name__),
++            int(node.attrib["fail_count"]),
++        ),
++    )
++    xml_string = """
++        <RetryUntilSuccessful num_attempts="3">
++            <FlakyNode name="Flaky" fail_count="2" />
++        </RetryUntilSuccessful>
++    """
++    bt = bt_factory.build_tree(xml_string)
++
++    bt.tick()
++    assert bt.root.status == Status.RUNNING
++    assert bt.root.attempts == 1
++
++    bt.tick()
++    assert bt.root.status == Status.RUNNING
++    assert bt.root.attempts == 2
++
++    bt.tick()
++    assert bt.root.status == Status.SUCCESS
++    assert bt.root.attempts == 0
++
++
++def test_retry_until_successful_exceeds_max_attempts():
++    bt_factory = BehaviorTreeFactory()
++    bt_factory.register_node_builder(
++        "FlakyNode",
++        lambda node: FlakyNode(
++            node.attrib.get("name", FlakyNode.__name__),
++            int(node.attrib["fail_count"]),
++        ),
++    )
++    xml_string = """
++        <RetryUntilSuccessful num_attempts="3">
++            <FlakyNode name="Flaky" fail_count="999" />
++        </RetryUntilSuccessful>
++    """
++    bt = bt_factory.build_tree(xml_string)
++
++    bt.tick()
++    assert bt.root.status == Status.RUNNING
++    assert bt.root.attempts == 1
++
++    bt.tick()
++    assert bt.root.status == Status.RUNNING
++    assert bt.root.attempts == 2
++
++    bt.tick()
++    assert bt.root.status == Status.FAILURE
++    assert bt.root.attempts == 3
++
++
++def test_retry_until_successful_passes_through_running():
++    class SlowNode(ActionNode):
++        def __init__(self, name, ready_after_ticks):
++            super().__init__(name)
++            self.ready_after_ticks = ready_after_ticks
++            self.ticks = 0
++
++        def tick(self):
++            self.ticks += 1
++            if self.ticks >= self.ready_after_ticks:
++                return Status.SUCCESS
++            return Status.RUNNING
++
++        def reset(self):
++            super().reset()
++            self.ticks = 0
++
++    bt_factory = BehaviorTreeFactory()
++    bt_factory.register_node_builder(
++        "SlowNode",
++        lambda node: SlowNode(
++            node.attrib.get("name", SlowNode.__name__),
++            int(node.attrib["ready_after_ticks"]),
++        ),
++    )
++    xml_string = """
++        <RetryUntilSuccessful num_attempts="5">
++            <SlowNode name="Slow" ready_after_ticks="3" />
++        </RetryUntilSuccessful>
++    """
++    bt = bt_factory.build_tree(xml_string)
++
++    bt.tick()
++    assert bt.root.status == Status.RUNNING
++    assert bt.root.attempts == 0
++
++    bt.tick()
++    assert bt.root.status == Status.RUNNING
++    assert bt.root.attempts == 0
++
++    bt.tick()
++    assert bt.root.status == Status.SUCCESS
++    assert bt.root.attempts == 0
++
++
++def test_retry_until_successful_with_sequence_composition_and_reset():
++    bt_factory = BehaviorTreeFactory()
++    bt_factory.register_node_builder(
++        "FlakyNode",
++        lambda node: FlakyNode(
++            node.attrib.get("name", FlakyNode.__name__),
++            int(node.attrib["fail_count"]),
++        ),
++    )
++    xml_string = """
++        <Sequence name="Root">
++            <RetryUntilSuccessful name="Retry" num_attempts="3">
++                <FlakyNode name="Flaky" fail_count="1" />
++            </RetryUntilSuccessful>
++            <Echo name="EchoFinish" message="Done!" />
++        </Sequence>
++    """
++    bt = bt_factory.build_tree(xml_string)
++
++    bt.tick()
++    assert bt.root.status == Status.RUNNING
++    retry_node = bt.root.children[0]
++    assert retry_node.status == Status.RUNNING
++    assert retry_node.attempts == 1
++
++    bt.tick()
++    assert bt.root.status == Status.RUNNING
++    assert retry_node.status == Status.SUCCESS
++    assert retry_node.attempts == 0
++    assert bt.root.children[1].status is None
++
++    bt.tick()
++    assert bt.root.status == Status.RUNNING
++    assert bt.root.children[1].status == Status.SUCCESS
++
++    bt.tick()
++    assert bt.root.status == Status.SUCCESS
++    assert retry_node.status is None
++    assert bt.root.children[1].status is None
++
++
+ if __name__ == "__main__":
+     conftest.run_this_test(__file__)
