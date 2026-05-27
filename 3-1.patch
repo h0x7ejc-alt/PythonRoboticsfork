@@ -1,0 +1,355 @@
+diff --git a/PathPlanning/TimeBasedPathPlanning/BaseClasses.py b/PathPlanning/TimeBasedPathPlanning/BaseClasses.py
+index 745cde4..bf439ea 100644
+--- a/PathPlanning/TimeBasedPathPlanning/BaseClasses.py
++++ b/PathPlanning/TimeBasedPathPlanning/BaseClasses.py
+@@ -1,5 +1,6 @@
+ from abc import ABC, abstractmethod
+ from dataclasses import dataclass
++from typing import Literal, TypeAlias
+ from PathPlanning.TimeBasedPathPlanning.GridWithDynamicObstacles import (
+     Grid,
+     Position,
+@@ -8,6 +9,10 @@ from PathPlanning.TimeBasedPathPlanning.Node import NodePath
+ import random
+ import numpy.random as numpy_random
+ 
++PriorityBasedPlanningStrategy: TypeAlias = Literal[
++    "longest_first", "shortest_first", "input_order"
++]
++
+ # Seed randomness for reproducibility
+ RANDOM_SEED = 50
+ random.seed(RANDOM_SEED)
+@@ -17,7 +22,7 @@ class SingleAgentPlanner(ABC):
+     """
+     Base class for single agent planners
+     """
+-    
++
+     @staticmethod
+     @abstractmethod
+     def plan(grid: Grid, start: Position, goal: Position, verbose: bool = False) -> NodePath:
+@@ -25,11 +30,8 @@ class SingleAgentPlanner(ABC):
+ 
+ @dataclass
+ class StartAndGoal:
+-    # Index of this agent
+     index: int
+-    # Start position of the robot
+     start: Position
+-    # Goal position of the robot
+     goal: Position
+ 
+     def distance_start_to_goal(self) -> float:
+@@ -38,12 +40,18 @@ class StartAndGoal:
+ class MultiAgentPlanner(ABC):
+     """
+     Base class for multi-agent planners
+-    """       
+-    
++    """
++
+     @staticmethod
+     @abstractmethod
+-    def plan(grid: Grid, start_and_goal_positions: list[StartAndGoal], single_agent_planner_class: SingleAgentPlanner, verbose: bool = False) -> tuple[list[StartAndGoal], list[NodePath]]:
++    def plan(
++        grid: Grid,
++        start_and_goal_positions: list[StartAndGoal],
++        single_agent_planner_class: SingleAgentPlanner,
++        verbose: bool = False,
++        priority_order_strategy: PriorityBasedPlanningStrategy = "longest_first",
++    ) -> tuple[list[StartAndGoal], list[NodePath]]:
+         """
+         Plan for all agents. Returned paths are in order corresponding to the returned list of `StartAndGoal` objects
+         """
+-        pass
+\ No newline at end of file
++        pass
+diff --git a/PathPlanning/TimeBasedPathPlanning/PriorityBasedPlanner.py b/PathPlanning/TimeBasedPathPlanning/PriorityBasedPlanner.py
+index 2573965..5018bd8 100644
+--- a/PathPlanning/TimeBasedPathPlanning/PriorityBasedPlanner.py
++++ b/PathPlanning/TimeBasedPathPlanning/PriorityBasedPlanner.py
+@@ -13,9 +13,13 @@ from PathPlanning.TimeBasedPathPlanning.GridWithDynamicObstacles import (
+     ObstacleArrangement,
+     Position,
+ )
+-from PathPlanning.TimeBasedPathPlanning.BaseClasses import MultiAgentPlanner, StartAndGoal
++from PathPlanning.TimeBasedPathPlanning.BaseClasses import (
++    MultiAgentPlanner,
++    PriorityBasedPlanningStrategy,
++    SingleAgentPlanner,
++    StartAndGoal,
++)
+ from PathPlanning.TimeBasedPathPlanning.Node import NodePath
+-from PathPlanning.TimeBasedPathPlanning.BaseClasses import SingleAgentPlanner
+ from PathPlanning.TimeBasedPathPlanning.SafeInterval import SafeIntervalPathPlanner
+ from PathPlanning.TimeBasedPathPlanning.Plotting import PlotNodePaths
+ import time
+@@ -23,40 +27,80 @@ import time
+ class PriorityBasedPlanner(MultiAgentPlanner):
+ 
+     @staticmethod
+-    def plan(grid: Grid, start_and_goals: list[StartAndGoal], single_agent_planner_class: SingleAgentPlanner, verbose: bool = False) -> tuple[list[StartAndGoal], list[NodePath]]:
++    def get_planning_order(
++        start_and_goals: list[StartAndGoal],
++        priority_order_strategy: PriorityBasedPlanningStrategy,
++    ) -> list[StartAndGoal]:
++        if priority_order_strategy == "longest_first":
++            return sorted(
++                start_and_goals,
++                key=lambda item: item.distance_start_to_goal(),
++                reverse=True,
++            )
++
++        if priority_order_strategy == "shortest_first":
++            return sorted(
++                start_and_goals,
++                key=lambda item: item.distance_start_to_goal(),
++            )
++
++        if priority_order_strategy == "input_order":
++            return list(start_and_goals)
++
++        raise ValueError(
++            "priority_order_strategy must be one of: longest_first, shortest_first, input_order"
++        )
++
++    @staticmethod
++    def plan(
++        grid: Grid,
++        start_and_goals: list[StartAndGoal],
++        single_agent_planner_class: SingleAgentPlanner,
++        verbose: bool = False,
++        priority_order_strategy: PriorityBasedPlanningStrategy = "longest_first",
++    ) -> tuple[list[StartAndGoal], list[NodePath]]:
+         """
+         Generate a path from the start to the goal for each agent in the `start_and_goals` list.
+-        Returns the re-ordered StartAndGoal combinations, and a list of path plans. The order of the plans
+-        corresponds to the order of the `start_and_goals` list.
++        Returns the planning order and a list of path plans. The order of the plans corresponds to the
++        returned `start_and_goals` list.
+         """
+         print(f"Using single-agent planner: {single_agent_planner_class}")
+ 
+-        # Reserve initial positions
+         for start_and_goal in start_and_goals:
+             grid.reserve_position(start_and_goal.start, start_and_goal.index, Interval(0, 10))
+ 
+-        # Plan in descending order of distance from start to goal
+-        start_and_goals = sorted(start_and_goals,
+-                    key=lambda item: item.distance_start_to_goal(),
+-                    reverse=True)
++        ordered_start_and_goals = PriorityBasedPlanner.get_planning_order(
++            start_and_goals,
++            priority_order_strategy,
++        )
+ 
++        planned_start_and_goals = []
+         paths = []
+-        for start_and_goal in start_and_goals:
++        for start_and_goal in ordered_start_and_goals:
+             if verbose:
+-                print(f"\nPlanning for agent:  {start_and_goal}" )
++                print(f"\nPlanning for agent:  {start_and_goal}")
+ 
+             grid.clear_initial_reservation(start_and_goal.start, start_and_goal.index)
+-            path = single_agent_planner_class.plan(grid, start_and_goal.start, start_and_goal.goal, verbose)
++
++            try:
++                path = single_agent_planner_class.plan(
++                    grid,
++                    start_and_goal.start,
++                    start_and_goal.goal,
++                    verbose,
++                )
++            except Exception:
++                path = None
+ 
+             if path is None:
+                 print(f"Failed to find path for {start_and_goal}")
+-                return []
++                return (planned_start_and_goals, paths)
+ 
+-            agent_index = start_and_goal.index
+-            grid.reserve_path(path, agent_index)
++            grid.reserve_path(path, start_and_goal.index)
++            planned_start_and_goals.append(start_and_goal)
+             paths.append(path)
+ 
+-        return (start_and_goals, paths)
++        return (planned_start_and_goals, paths)
+ 
+ verbose = False
+ show_animation = True
+@@ -70,9 +114,7 @@ def main():
+         np.array([grid_side_length, grid_side_length]),
+         num_obstacles=250,
+         obstacle_avoid_points=obstacle_avoid_points,
+-        # obstacle_arrangement=ObstacleArrangement.NARROW_CORRIDOR,
+         obstacle_arrangement=ObstacleArrangement.ARRANGEMENT1,
+-        # obstacle_arrangement=ObstacleArrangement.RANDOM,
+     )
+ 
+     start_time = time.time()
+@@ -92,4 +134,4 @@ def main():
+     PlotNodePaths(grid, start_and_goals, paths)
+ 
+ if __name__ == "__main__":
+-    main()
+\ No newline at end of file
++    main()
+diff --git a/tests/test_priority_based_planner.py b/tests/test_priority_based_planner.py
+index e2ff602..901961f 100644
+--- a/tests/test_priority_based_planner.py
++++ b/tests/test_priority_based_planner.py
+@@ -6,12 +6,120 @@ from PathPlanning.TimeBasedPathPlanning.GridWithDynamicObstacles import (
+ )
+ from PathPlanning.TimeBasedPathPlanning.BaseClasses import StartAndGoal
+ from PathPlanning.TimeBasedPathPlanning import PriorityBasedPlanner as m
++from PathPlanning.TimeBasedPathPlanning.Node import Node
+ from PathPlanning.TimeBasedPathPlanning.SafeInterval import SafeIntervalPathPlanner
+ import numpy as np
+ import conftest
+ 
+ 
+-def test_1():
++def build_grid(grid_side_length: int = 21) -> Grid:
++    return Grid(
++        np.array([grid_side_length, grid_side_length]),
++        num_obstacles=0,
++        obstacle_arrangement=ObstacleArrangement.RANDOM,
++        time_limit=20,
++    )
++
++
++def build_start_and_goals() -> list[StartAndGoal]:
++    return [
++        StartAndGoal(7, Position(0, 0), Position(0, 4)),
++        StartAndGoal(3, Position(1, 0), Position(1, 1)),
++        StartAndGoal(11, Position(2, 0), Position(2, 2)),
++    ]
++
++
++class RecordingPlanner:
++    call_order: list[int] = []
++
++    @staticmethod
++    def plan(grid: Grid, start: Position, goal: Position, verbose: bool = False) -> NodePath:
++        RecordingPlanner.call_order.append(start.x)
++        return NodePath([
++            Node(start, 0, 0, -1),
++            Node(goal, 1, 0, 0),
++        ], 0)
++
++
++class FailingPlanner:
++    @staticmethod
++    def plan(grid: Grid, start: Position, goal: Position, verbose: bool = False) -> NodePath:
++        if goal == Position(2, 2):
++            raise Exception("No path found")
++
++        return NodePath([
++            Node(start, 0, 0, -1),
++            Node(goal, 1, 0, 0),
++        ], 0)
++
++
++def test_plan_default_strategy_matches_longest_first_order():
++    grid = build_grid()
++    start_and_goals = build_start_and_goals()
++
++    RecordingPlanner.call_order = []
++    ordered_start_and_goals, paths = m.PriorityBasedPlanner.plan(
++        grid,
++        start_and_goals,
++        RecordingPlanner,
++    )
++
++    assert [item.index for item in ordered_start_and_goals] == [7, 11, 3]
++    assert RecordingPlanner.call_order == [0, 2, 1]
++    assert [path.path[0].position for path in paths] == [item.start for item in ordered_start_and_goals]
++
++
++def test_plan_supports_shortest_first_order():
++    grid = build_grid()
++    start_and_goals = build_start_and_goals()
++
++    RecordingPlanner.call_order = []
++    ordered_start_and_goals, _ = m.PriorityBasedPlanner.plan(
++        grid,
++        start_and_goals,
++        RecordingPlanner,
++        priority_order_strategy="shortest_first",
++    )
++
++    assert [item.index for item in ordered_start_and_goals] == [3, 11, 7]
++    assert RecordingPlanner.call_order == [1, 2, 0]
++
++
++def test_plan_supports_input_order():
++    grid = build_grid()
++    start_and_goals = build_start_and_goals()
++
++    RecordingPlanner.call_order = []
++    ordered_start_and_goals, _ = m.PriorityBasedPlanner.plan(
++        grid,
++        start_and_goals,
++        RecordingPlanner,
++        priority_order_strategy="input_order",
++    )
++
++    assert [item.index for item in ordered_start_and_goals] == [7, 3, 11]
++    assert RecordingPlanner.call_order == [0, 1, 2]
++
++
++def test_plan_returns_stable_tuple_when_agent_planning_fails():
++    grid = build_grid()
++    start_and_goals = build_start_and_goals()
++
++    result = m.PriorityBasedPlanner.plan(
++        grid,
++        start_and_goals,
++        FailingPlanner,
++    )
++
++    assert isinstance(result, tuple)
++
++    planned_start_and_goals, paths = result
++    assert [item.index for item in planned_start_and_goals] == [7]
++    assert len(paths) == 1
++    assert paths[0].path[-1].position == planned_start_and_goals[0].goal
++
++
++def test_plan_with_safe_interval_planner_reaches_each_goal():
+     grid_side_length = 21
+ 
+     start_and_goals = [StartAndGoal(i, Position(1, i), Position(19, 19-i)) for i in range(1, 16)]
+@@ -26,14 +134,23 @@ def test_1():
+ 
+     m.show_animation = False
+ 
+-    start_and_goals: list[StartAndGoal]
+-    paths: list[NodePath]
+-    start_and_goals, paths = m.PriorityBasedPlanner.plan(grid, start_and_goals, SafeIntervalPathPlanner, False)
++    ordered_start_and_goals, paths = m.PriorityBasedPlanner.plan(
++        grid,
++        start_and_goals,
++        SafeIntervalPathPlanner,
++        False,
++    )
++
++    assert len(ordered_start_and_goals) == len(paths)
++    assert [item.distance_start_to_goal() for item in ordered_start_and_goals] == sorted(
++        [item.distance_start_to_goal() for item in ordered_start_and_goals],
++        reverse=True,
++    )
+ 
+-    # All paths should start at the specified position and reach the goal
+-    for i, start_and_goal in enumerate(start_and_goals):
++    for i, start_and_goal in enumerate(ordered_start_and_goals):
+         assert paths[i].path[0].position == start_and_goal.start
+         assert paths[i].path[-1].position == start_and_goal.goal
+ 
++
+ if __name__ == "__main__":
+     conftest.run_this_test(__file__)
