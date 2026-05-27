@@ -435,6 +435,58 @@ class ForceFailureNode(DecoratorNode):
         return status
 
 
+class RetryUntilSuccessfulNode(DecoratorNode):
+    """
+    RetryUntilSuccessful node that retries a child node until it succeeds or reaches max attempts.
+
+    Returns:
+        - Returns SUCCESS if child returns SUCCESS
+        - Returns RUNNING if child returns FAILURE and max attempts not reached
+        - Returns FAILURE if child returns FAILURE and max attempts reached
+        - Returns RUNNING if child returns RUNNING
+
+    Example:
+        .. code-block:: xml
+
+            <RetryUntilSuccessful num_attempts="3">
+                <Action />
+            </RetryUntilSuccessful>
+    """
+
+    def __init__(self, name, num_attempts):
+        super().__init__(name)
+        self.num_attempts = num_attempts
+        self.current_attempt = 0
+
+    def reset(self):
+        self.status = None
+        self.current_attempt = 0
+        self.reset_children()
+
+    def tick(self) -> Status:
+        self.not_set_child_raise_error()
+
+        if self.current_attempt >= self.num_attempts:
+            return Status.FAILURE
+
+        status = self.child.tick_and_set_status()
+
+        if status == Status.SUCCESS:
+            self.reset_children()
+            return Status.SUCCESS
+        elif status == Status.FAILURE:
+            self.current_attempt += 1
+            if self.current_attempt < self.num_attempts:
+                self.child.reset()
+                return Status.RUNNING
+            else:
+                return Status.FAILURE
+        elif status == Status.RUNNING:
+            return Status.RUNNING
+        else:
+            raise ValueError("Unknown status")
+
+
 class BehaviorTree:
     """
     Behavior tree class that manages the execution of a behavior tree.
@@ -570,6 +622,13 @@ class BehaviorTreeFactory:
             "ForceFailure",
             lambda node: ForceFailureNode(
                 node.attrib.get("name", ForceFailureNode.__name__)
+            ),
+        )
+        self.register_node_builder(
+            "RetryUntilSuccessful",
+            lambda node: RetryUntilSuccessfulNode(
+                node.attrib.get("name", RetryUntilSuccessfulNode.__name__),
+                int(node.attrib["num_attempts"]),
             ),
         )
         # Action nodes
